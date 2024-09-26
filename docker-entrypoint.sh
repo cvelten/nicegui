@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
 # Get the PUID and PGID from environment variables (or use default values 1000 if not set)
 PUID=${PUID:-1000}
