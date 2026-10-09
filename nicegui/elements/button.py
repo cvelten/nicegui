@@ -1,22 +1,24 @@
 import asyncio
-from typing import Optional
 
 from typing_extensions import Self
 
+from ..defaults import DEFAULT_PROP, resolve_defaults
 from ..events import ClickEventArguments, Handler, handle_event
+from .mixins.cancelable_wait_element import CancelableWaitElement
 from .mixins.color_elements import BackgroundColorElement
 from .mixins.disableable_element import DisableableElement
 from .mixins.icon_element import IconElement
 from .mixins.text_element import TextElement
 
 
-class Button(IconElement, TextElement, DisableableElement, BackgroundColorElement):
+class Button(IconElement, TextElement, DisableableElement, BackgroundColorElement, CancelableWaitElement):
 
+    @resolve_defaults
     def __init__(self,
                  text: str = '', *,
-                 on_click: Optional[Handler[ClickEventArguments]] = None,
-                 color: Optional[str] = 'primary',
-                 icon: Optional[str] = None,
+                 on_click: Handler[ClickEventArguments] | None = None,
+                 color: str | None = DEFAULT_PROP | 'primary',
+                 icon: str | None = DEFAULT_PROP | None,
                  ) -> None:
         """Button
 
@@ -32,6 +34,8 @@ class Button(IconElement, TextElement, DisableableElement, BackgroundColorElemen
         :param color: the color of the button (either a Quasar, Tailwind, or CSS color or `None`, default: 'primary')
         :param icon: the name of an icon to be displayed on the button (default: `None`)
         """
+        self._clicked_waiters: set[asyncio.Event] = set()
+        self._clicked_waiters_registered = False
         super().__init__(tag='q-btn', text=text, background_color=color, icon=icon)
 
         if on_click:
@@ -42,12 +46,37 @@ class Button(IconElement, TextElement, DisableableElement, BackgroundColorElemen
         self.on('click', lambda _: handle_event(callback, ClickEventArguments(sender=self, client=self.client)), [])
         return self
 
+    def _render_markdown(self) -> str:
+        if label := self._props.get('label'):
+            return f'[Button: {label}]'
+        if aria_label := self._props.get('aria-label'):
+            return f'[Button: {aria_label}]'
+        if icon := self._props.get('icon'):
+            return f'[Button: icon:{icon}]'
+        children = self._children_to_markdown().strip()
+        if children and '\n' not in children and '[' not in children and ']' not in children:
+            # only surface single plain lines of child content that doesn't garble the "[Button: ...]" wrapper
+            return f'[Button: {children}]'
+        return '[Button]'
+
     def _text_to_model_text(self, text: str) -> None:
         self._props['label'] = text
 
     async def clicked(self) -> None:
-        """Wait until the button is clicked."""
+        """Wait until the button is clicked.
+
+        *Updated in version 3.17.0: Awaiting the button click cancels the awaiting task
+        when the button is deleted, e.g. because the client disconnected.*
+        """
+        if not self._clicked_waiters_registered:
+            def wake_clicked_waiters() -> None:
+                for event in self._clicked_waiters:
+                    event.set()
+            self.on('click', wake_clicked_waiters, [])
+            self._clicked_waiters_registered = True
         event = asyncio.Event()
-        self.on('click', event.set, [])
-        await self.client.connected()
-        await event.wait()
+        self._clicked_waiters.add(event)
+        try:
+            await self._wait_for(event)
+        finally:
+            self._clicked_waiters.discard(event)

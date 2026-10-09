@@ -1,6 +1,11 @@
+from pathlib import Path
+
 from nicegui import ui
 
+from ..windows import code_window
 from . import doc
+
+TORUS_KNOT_JS = (Path(__file__).parent / 'static' / 'torus_knot.js').read_text()
 
 
 @doc.demo(ui.scene)
@@ -70,9 +75,8 @@ def context_menu_for_3d_objects():
     from nicegui import events
 
     def handle_click(e: events.SceneClickEventArguments) -> None:
-        context_menu.clear()
         name = next((hit.object_name for hit in e.hits if hit.object_name), None)
-        with context_menu:
+        with context_menu.clear():
             if name == 'sphere':
                 ui.item('SPHERE').classes('font-bold')
                 ui.menu_item('inspect')
@@ -177,6 +181,35 @@ async def wait_for_init() -> None:
             scene.move_camera(x=1, y=-1, z=1.5, duration=2)
 
 
+@doc.demo('Changing Controls', '''
+    You can change the controls of a scene using the `control_type` argument.
+
+    The available control types are:
+
+    - **"orbit" (default)**:
+      Works for most applications.
+      But the camera stops when it orbits over the "north" and "south" poles to maintain a fixed up direction.
+    - "trackball":
+      Similar to orbit, but it keeps going around the poles.
+      It is a good choice for applications where camera flexibility is important.
+    - "map":
+      Allows to pan and zoom like in a 3D map view application.
+      Good for map-like applications such as in [RoSys](https://rosys.io).
+''')
+def change_controls() -> None:
+    ui.label('Orbit controls (default)')
+    with ui.scene(width=285, height=220):
+        ui.scene.sphere()
+
+    ui.label('Trackball controls')
+    with ui.scene(width=285, height=220, control_type='trackball'):
+        ui.scene.sphere()
+
+    ui.label('Map controls')
+    with ui.scene(width=285, height=220, control_type='map'):
+        ui.scene.sphere()
+
+
 @doc.demo(ui.scene_view)
 def scene_views():
     with ui.grid(columns=2).classes('w-full'):
@@ -189,6 +222,26 @@ def scene_views():
 
         with ui.scene_view(scene).classes('h-32') as scene_view2:
             scene_view2.move_camera(x=0, y=4, z=3)
+
+
+@doc.demo('Frame Rate and Statistics', '''
+    You can configure the target frames per second (FPS) of the scene using the `fps` argument.
+    The default value is 20.
+    To see the changes for yourself, enable the statistics display using the `show_stats` argument.
+    This demo shows how to set the frame rate to 40 FPS for the main scene and 5 FPS for the static view.
+    The FPS is generally lower than the target frame rate, because the browser also takes some time to render the scene.
+    This also applies to `ui.scene_view`.
+
+    *Added in version 3.2.0*
+''')
+def fps_stats_configuration() -> None:
+    ui.label('Higher frame rate for the movable view')
+    with ui.scene(fps=40, show_stats=True).classes('w-full h-32') as scene:
+        scene.sphere()
+
+    ui.label('Lower frame rate for the static view')
+    with ui.scene_view(scene, fps=5, show_stats=True).classes('w-full h-32') as scene_view:
+        scene_view.move_camera(x=1, y=-3, z=5)
 
 
 @doc.demo('Camera Parameters', '''
@@ -266,6 +319,105 @@ def custom_composed_objects() -> None:
     with ui.scene().classes('w-full h-64'):
         CoordinateSystem('origin')
         CoordinateSystem('custom frame').move(-2, -2, 1).rotate(0.1, 0.2, 0.3)
+
+
+@doc.demo('Custom Three.js Objects', '''
+    If the primitives bundled in NiceGUI are not enough for your needs, or if you want to run
+    complex logic on the client side, you can create your own 3D objects.
+    Subclass `Object3D` and pass `component=` with the path to a JavaScript module,
+    resolved relative to the Python file.
+    Arguments passed to `super().__init__(...)` are forwarded positionally to the module's factory method.
+    Additional Python methods can dispatch to same-named methods of the JavaScript class via `run_method`.
+
+    The JavaScript module for this demo is shown below.
+
+    *Added in version 3.16.0*
+''')
+def custom_3d_scene_objects() -> None:
+    # from nicegui import app
+    from nicegui.elements.scene import Object3D
+
+    class TorusKnot(Object3D, component='static/torus_knot.js'):
+        def __init__(self, *, radius: float, tube: float, p: int, q: int) -> None:
+            super().__init__(radius, tube, p, q)
+
+        def update_topology(self, p: int, q: int) -> None:
+            self.run_method('update_topology', p, q)
+
+    with ui.scene().classes('w-full h-96'):
+        knot = TorusKnot(radius=1.5, tube=0.4, p=2, q=3).move(z=1)
+
+    ui.label('Winds around axis:')
+    p_slider = ui.slider(min=1, max=10, value=2)
+    ui.label('Winds around interior:')
+    q_slider = ui.slider(min=1, max=10, value=3)
+
+    p_slider.on_value_change(lambda e: knot.update_topology(e.value, q_slider.value))
+    q_slider.on_value_change(lambda e: knot.update_topology(p_slider.value, e.value))
+
+
+@doc.part('')
+def custom_object_javascript_module() -> None:
+    ui.markdown('''
+        **The JavaScript module**
+
+        The JavaScript module referenced via `component=` — `static/torus_knot.js` in the demo above —
+        default-exports a class.
+        NiceGUI instantiates it once per scene object and calls one of two entry points to build the mesh:
+
+        - `create_geometry(...args)` returns a `THREE.BufferGeometry`.
+          NiceGUI wraps it in a `MeshPhongMaterial`
+          (or a wireframe `LineSegments` if `wireframe=True` is passed to `super().__init__()`),
+          so the built-in `material()`, `move()`, `scale()` etc. work automatically.
+        - `create_mesh(...args)` returns a `THREE.Object3D` for full control.
+          Use it when the object is more than a single geometry
+          or when your own methods need ongoing access to the mesh, like `update_topology` below.
+    ''')
+
+    code_window(title='torus_knot.js', language='js', code=TORUS_KNOT_JS).classes('w-full')
+
+
+@doc.part('')
+def materials_for_composite_objects() -> None:
+    ui.markdown('''
+        **Materials for composite objects**
+
+        When Python calls `material(...)`, NiceGUI applies color, opacity and side to the material of the mesh.
+        A composite object built from several sub-meshes can define the optional `apply_material` hook
+        to decide which parts the material applies to.
+        The hook receives a single options object;
+        destructure the fields you need, so future NiceGUI versions can add fields without breaking your component.
+        The `apply_material` function exported by the `nicegui-scene` module implements NiceGUI's material semantics
+        (`color=None` enables vertex colors, `side` is "front", "back" or "both").
+    ''')
+
+    code_window(title='robot.js', language='js', code='''
+        import { apply_material, THREE } from "nicegui-scene";
+
+        export default class Robot {
+          create_mesh() {
+            this.body = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 2), new THREE.MeshPhongMaterial({ transparent: true }));
+            this.eyes = new THREE.Mesh(new THREE.SphereGeometry(0.2), new THREE.MeshPhongMaterial({ color: "black" }));
+            this.eyes.position.set(0.5, 0, 1);
+            return new THREE.Group().add(this.body, this.eyes);
+          }
+
+          apply_material(options) {
+            apply_material(this.body.material, options); // tint only the body, keep the eyes black
+          }
+        }
+    ''').classes('w-full')
+
+    ui.markdown('''
+        There is also an optional `created()` hook which is called right after the mesh has been built.
+
+        Note that NiceGUI sends every object to the client when the scene is initialized
+        and re-creates it after a lost WebGL context,
+        both from its constructor arguments (`self.args`) and built-in state like position, rotation and material.
+        State changed only via `run_method` is not included,
+        and calls made before the scene is initialized are dropped —
+        keep `self.args` up to date in mutating methods so created objects reflect the latest state.
+    ''')
 
 
 @doc.demo('Attaching/detaching objects', '''

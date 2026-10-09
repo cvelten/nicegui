@@ -1,11 +1,9 @@
-from typing import Optional
-
 from .element import Element
 
 
 def _create_html_element(tag: str):
     class HTMLElement(Element):
-        def __init__(self, inner_html: Optional[str] = None, **kwargs) -> None:
+        def __init__(self, inner_html: str | None = None, **kwargs) -> None:
             super().__init__(tag)
             self._text = inner_html
             self.props.update(**kwargs)
@@ -52,6 +50,11 @@ figure = _create_html_element('figure')
 footer = _create_html_element('footer')
 form = _create_html_element('form')
 h1 = _create_html_element('h1')
+h2 = _create_html_element('h2')
+h3 = _create_html_element('h3')
+h4 = _create_html_element('h4')
+h5 = _create_html_element('h5')
+h6 = _create_html_element('h6')
 header = _create_html_element('header')
 hgroup = _create_html_element('hgroup')
 hr = _create_html_element('hr')

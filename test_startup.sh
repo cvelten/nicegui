@@ -2,11 +2,60 @@
 
 set -euo pipefail
 
+request() {
+    local url="$1" code
+    # Servers with reload=True can print their URL before the socket accepts connections.
+    code=$(curl --silent --location --retry 5 --retry-connrefused --retry-delay 1 --output /dev/null --write-out '%{http_code}' --max-time 5 "$url" || true)
+    if (( code < 200 || code >= 500 )); then
+        echo "Request to $url failed with HTTP status $code"
+        return 1
+    fi
+}
+
 run() {
     pwd
-    output=$({ timeout 10 ./"$1" "${@:2}"; } 2>&1)
-    exitcode=$?
-    [[ $exitcode -eq 124 ]] && exitcode=0 # exitcode 124 is coming from "timeout command above"
+    local output_file
+    output_file=$(mktemp)
+    local request_output_file
+    request_output_file=$(mktemp)
+    local exitcode=0
+    local timeout_seconds=15
+    { timeout "$timeout_seconds" uv run --no-sync ./"$1" "${@:2}" < <(sleep "$timeout_seconds"); } > "$output_file" 2>&1 &
+    local pid=$!
+
+    local ready=0
+    # Poll for the whole timeout window so slow-starting servers are still detected; exit early once ready or dead.
+    for ((i = 0; i < timeout_seconds * 5; i++)); do
+        if grep -qE "NiceGUI ready to go|Uvicorn running on http://127.0.0.1:8000" "$output_file"; then
+            ready=1
+            break
+        fi
+        if ! kill -0 "$pid" 2>/dev/null; then
+            break
+        fi
+        sleep 0.2
+    done
+
+    if [[ $ready -eq 1 ]]; then
+        local url
+        url=$(grep -Eo "http://(127\.0\.0\.1|localhost):[0-9]+" "$output_file" | head -n 1 || true)
+        request "${url:-http://127.0.0.1:8080}/" > "$request_output_file" 2>&1 || exitcode=1
+    else
+        exitcode=1
+    fi
+
+    local process_exit=0
+    wait "$pid" || process_exit=$?
+    [[ $process_exit -eq 124 ]] && process_exit=0 # exitcode 124 is coming from "timeout command above"
+    [[ $process_exit -ne 0 ]] && exitcode=$process_exit
+    local output
+    output=$(cat "$output_file")
+    local request_output
+    request_output=$(cat "$request_output_file")
+    rm "$output_file" "$request_output_file"
+    if [[ -n $request_output ]]; then
+        output="$output"$'\n'"$request_output"
+    fi
     echo "$output" | grep -qE "NiceGUI ready to go|Uvicorn running on http://127.0.0.1:8000" || exitcode=1
     echo "$output" | grep -qE "Traceback|Error" && exitcode=1
     if [[ $exitcode -ne 0 ]]; then
@@ -44,9 +93,9 @@ do
         continue # until https://github.com/pygobject/pycairo/issues/387 is fixed
     fi
 
-    # Skip examples/sqlite_database for Python 3.11 and 3.12
-    if [[ $(python3 --version | cut -d' ' -f2 | cut -d'.' -f1,2) =~ ^3.1[12]$ ]] && [[ $path == "examples/sqlite_database" ]]; then
-        continue # until https://github.com/omnilib/aiosqlite/issues/241 is fixed
+    # Skip examples/ai_interface for Python 3.14
+    if [[ $(uv run python3 --version | cut -d' ' -f2 | cut -d'.' -f1,2) =~ ^3.14$ ]] && [[ $path == "examples/ai_interface" ]]; then
+        continue # It still uses Pydantic V1, which breaks horribly with Python 3.14
     fi
 
     # skip if path is examples/pyserial
@@ -57,7 +106,7 @@ do
     # install all requirements except nicegui
     if test -f $path/requirements.txt; then
         sed '/^nicegui/d' $path/requirements.txt > $path/requirements.tmp.txt || exit 1 # remove nicegui from requirements.txt
-        python3 -m pip install -r $path/requirements.tmp.txt || exit 1
+        uv pip install -r $path/requirements.tmp.txt || exit 1
         rm $path/requirements.tmp.txt || exit 1
     fi
 
@@ -69,7 +118,7 @@ do
     fi
     if pytest -q --collect-only $path >/dev/null 2>&1; then
         echo "running tests for $path"
-        pytest $path || exit 1
+        uv run --no-sync pytest $path || exit 1
     fi
 done
 

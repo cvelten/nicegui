@@ -1,26 +1,29 @@
-from collections.abc import Generator, Iterable
-from copy import deepcopy
-from typing import Any, Callable, Dict, Iterator, List, Literal, Optional, Union
+from collections.abc import Callable, Generator, Iterable, Iterator
+from contextlib import suppress
+from typing import Any, Literal
 
+from ..defaults import DEFAULT_PROP, DEFAULT_PROPS, resolve_defaults
 from ..events import GenericEventArguments, Handler, ValueChangeEventArguments
 from .choice_element import ChoiceElement
 from .mixins.disableable_element import DisableableElement
+from .mixins.label_element import LabelElement
 from .mixins.validation_element import ValidationDict, ValidationElement, ValidationFunction
 
 
-class Select(ValidationElement, ChoiceElement, DisableableElement, component='select.js'):
+class Select(LabelElement, ValidationElement[Any], ChoiceElement, DisableableElement, component='select.js'):
 
+    @resolve_defaults
     def __init__(self,
-                 options: Union[List, Dict], *,
-                 label: Optional[str] = None,
-                 value: Any = None,
-                 on_change: Optional[Handler[ValueChangeEventArguments]] = None,
+                 options: list | dict, *,
+                 label: str | None = DEFAULT_PROP | None,
+                 value: Any = DEFAULT_PROPS['model-value'] | None,
+                 on_change: Handler[ValueChangeEventArguments[Any]] | None = None,
                  with_input: bool = False,
-                 new_value_mode: Optional[Literal['add', 'add-unique', 'toggle']] = None,
-                 multiple: bool = False,
-                 clearable: bool = False,
-                 validation: Optional[Union[ValidationFunction, ValidationDict]] = None,
-                 key_generator: Optional[Union[Callable[[Any], Any], Iterator[Any]]] = None,
+                 new_value_mode: Literal['add', 'add-unique', 'toggle'] | None = DEFAULT_PROP | None,
+                 multiple: bool = DEFAULT_PROP | False,
+                 clearable: bool = DEFAULT_PROP | False,
+                 validation: ValidationFunction | ValidationDict | None = None,
+                 key_generator: Callable[[Any], Any] | Iterator[Any] | None = None,
                  ) -> None:
         """Dropdown Selection
 
@@ -59,30 +62,29 @@ class Select(ValidationElement, ChoiceElement, DisableableElement, component='se
             elif not isinstance(value, list):
                 value = [value]
             else:
-                value = value[:]  # NOTE: avoid modifying the original list which could be the list of options (#3014)
-        super().__init__(options=options, value=value, on_change=on_change, validation=validation)
-        if label is not None:
-            self._props['label'] = label
+                value = value[:]  # avoid modifying the original list which could be the list of options (#3014)
+        if isinstance(options, dict) and new_value_mode == 'add' and key_generator is None:
+            raise ValueError('new_value_mode "add" is not supported for dict options without key_generator')
         if isinstance(key_generator, Generator):
             next(key_generator)  # prime the key generator, prepare it to receive the first value
+        super().__init__(label=label, options=options, value=value, on_change=on_change, validation=validation)
         self.key_generator = key_generator
         if new_value_mode is not None:
-            if isinstance(options, dict) and new_value_mode == 'add' and key_generator is None:
-                raise ValueError('new_value_mode "add" is not supported for dict options without key_generator')
             self._props['new-value-mode'] = new_value_mode
             with_input = True
         if with_input:
-            self.original_options = deepcopy(options)
             self._props['use-input'] = True
-            self._props['hide-selected'] = not multiple
+            self._props.set_bool('hide-selected', not multiple)
             self._props['fill-input'] = True
             self._props['input-debounce'] = 0
-        self._props['multiple'] = multiple
-        self._props['clearable'] = clearable
+            self._props['for'] = self.html_id  # keep html_id on the input so tooltips/ui.query can anchor (#6114)
+        self._props.set_bool('multiple', multiple)
+        self._props.set_bool('clearable', clearable)
 
         self._is_showing_popup = False
-        self.on('popup-show', lambda e: setattr(e.sender, '_is_showing_popup', True))
-        self.on('popup-hide', lambda e: setattr(e.sender, '_is_showing_popup', False))
+        with self._props.suspend_updates():
+            self.on('popup-show', lambda e: setattr(e.sender, '_is_showing_popup', True))
+            self.on('popup-hide', lambda e: setattr(e.sender, '_is_showing_popup', False))
 
     @property
     def is_showing_popup(self) -> bool:
@@ -90,10 +92,18 @@ class Select(ValidationElement, ChoiceElement, DisableableElement, component='se
         return self._is_showing_popup
 
     def _event_args_to_value(self, e: GenericEventArguments) -> Any:
+        # pylint: disable=too-many-nested-blocks
         if self.multiple:
             if e.args is None:
                 return []
             else:
+                if self._props.get('new-value-mode') == 'add-unique':
+                    # handle issue #4896: eliminate duplicate arguments
+                    for arg1 in [a for a in e.args if isinstance(a, str)]:
+                        for arg2 in [a for a in e.args if isinstance(a, dict)]:
+                            if arg1 == arg2['label']:
+                                e.args.remove(arg1)
+                                break
                 args = [self._values[arg['value']] if isinstance(arg, dict) else arg for arg in e.args]
                 for arg in e.args:
                     if isinstance(arg, str):
@@ -114,11 +124,9 @@ class Select(ValidationElement, ChoiceElement, DisableableElement, component='se
         if self.multiple:
             result = []
             for item in value or []:
-                try:
+                with suppress(ValueError):
                     index = self._values.index(item)
                     result.append({'value': index, 'label': self._labels[index]})
-                except ValueError:
-                    pass
             return result
         else:
             try:
@@ -149,7 +157,7 @@ class Select(ValidationElement, ChoiceElement, DisableableElement, component='se
                     self.options.remove(value)
                 else:
                     self.options.append(value)
-            # NOTE: self._labels and self._values are updated via self.options since they share the same references
+            # self._labels and self._values are updated via self.options since they share the same references
             return value
         else:
             key = value
@@ -168,3 +176,9 @@ class Select(ValidationElement, ChoiceElement, DisableableElement, component='se
                     self.options.update({key: value})
             self._update_values_and_labels()
             return key
+
+    def _displayed_contents(self, *, only_visible: bool) -> list:
+        values = self.value if self.multiple else [self.value]
+        selected_labels = [value if isinstance(self.options, list) else self.options.get(value, '') for value in values]
+        option_labels = self._labels if self.is_showing_popup else []
+        return [*super()._displayed_contents(only_visible=only_visible), *selected_labels, *option_labels]

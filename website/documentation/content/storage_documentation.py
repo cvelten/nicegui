@@ -17,46 +17,52 @@ doc.title('Storage')
     It features five built-in storage types:
 
     - `app.storage.tab`:
-        Stored server-side in memory, this dictionary is unique to each non-duplicated tab session and can hold arbitrary objects.
-        Data will be lost when restarting the server until <https://github.com/zauberzeug/nicegui/discussions/2841> is implemented.
-        This storage is only available within [page builder functions](/documentation/page)
-        and requires an established connection, obtainable via [`await client.connected()`](/documentation/page#wait_for_client_connection).
+        Stored server-side in memory, this dictionary is unique to each tab session and can hold arbitrary objects.
+        The data survives page reloads and is kept for up to `app.storage.max_tab_storage_age` (30 days by default).
+        It is lost when restarting the server unless [Redis storage](#redis_storage) is used
+        (persisting it on disk by default is discussed in <https://github.com/zauberzeug/nicegui/discussions/2841>).
+        When a tab is duplicated, the new tab starts with a copy of the data, but afterwards the two tabs are independent.
+        This storage requires an established connection, obtainable via [`await client.connected()`](/documentation/page#wait_for_client_connection).
     - `app.storage.client`:
         Also stored server-side in memory, this dictionary is unique to each client connection and can hold arbitrary objects.
         Data will be discarded when the page is reloaded or the user navigates to another page.
         Unlike data stored in `app.storage.tab` which can be persisted on the server even for days,
         `app.storage.client` helps caching resource-hungry objects such as a streaming or database connection you need to keep alive
         for dynamic site updates but would like to discard as soon as the user leaves the page or closes the browser.
-        This storage is only available within [page builder functions](/documentation/page).
     - `app.storage.user`:
         Stored server-side, each dictionary is associated with a unique identifier held in a browser session cookie.
         Unique to each user, this storage is accessible across all their browser tabs.
         `app.storage.browser['id']` is used to identify the user.
-        This storage is only available within [page builder functions](/documentation/page)
-        and requires the `storage_secret` parameter in`ui.run()` to sign the browser session cookie.
+        This storage requires the `storage_secret` parameter in `ui.run()` to sign the browser session cookie.
     - `app.storage.general`:
         Also stored server-side, this dictionary provides a shared storage space accessible to all users.
     - `app.storage.browser`:
         Unlike the previous types, this dictionary is stored directly as the browser session cookie, shared among all browser tabs for the same user.
         However, `app.storage.user` is generally preferred due to its advantages in reducing data payload, enhancing security, and offering larger storage capacity.
         By default, NiceGUI holds a unique identifier for the browser session in `app.storage.browser['id']`.
-        This storage is only available within [page builder functions](/documentation/page)
-        and requires the `storage_secret` parameter in `ui.run()` to sign the browser session cookie.
+        This storage requires the `storage_secret` parameter in `ui.run()` to sign the browser session cookie.
 
     The following table will help you to choose storage.
 
-    | Storage type                | `client` | `tab`  | `browser` | `user` | `general` |
-    |-----------------------------|----------|--------|-----------|--------|-----------|
-    | Location                    | Server   | Server | Browser   | Server | Server    |
-    | Across tabs                 | No       | No     | Yes       | Yes    | Yes       |
-    | Across browsers             | No       | No     | No        | No     | Yes       |
-    | Across server restarts      | No       | Yes    | No        | Yes    | Yes       |
-    | Across page reloads         | No       | Yes    | Yes       | Yes    | Yes       |
-    | Needs page builder function | Yes      | Yes    | Yes       | Yes    | No        |
-    | Needs client connection     | No       | Yes    | No        | No     | No        |
-    | Write only before response  | No       | No     | Yes       | No     | No        |
-    | Needs serializable data     | No       | No     | Yes       | Yes    | Yes       |
-    | Needs `storage_secret`      | No       | No     | Yes       | Yes    | No        |
+    | Storage type                | `client` | `tab`            | `browser` | `user` | `general` |
+    |-----------------------------|----------|------------------|-----------|--------|-----------|
+    | Location                    | Server   | Server           | Browser   | Server | Server    |
+    | Across tabs                 | No       | No               | Yes       | Yes    | Yes       |
+    | Across browsers             | No       | No               | No        | No     | Yes       |
+    | Across server restarts      | No       | No<sup>1)</sup>  | No        | Yes    | Yes       |
+    | Across page reloads         | No       | Yes              | Yes       | Yes    | Yes       |
+    | Needs client connection     | No       | Yes<sup>2)</sup> | No        | No     | No        |
+    | Write only before response  | No       | No               | Yes       | No     | No        |
+    | Needs serializable data     | No       | No               | Yes       | Yes    | Yes       |
+    | Needs `storage_secret`      | No       | No               | Yes       | Yes    | No        |
+
+    <sup>1)</sup>
+    Tab storage persists across server restarts only when using [Redis storage](#redis_storage).
+
+    <sup>2)</sup>
+    Tab storage can only be accessed after the WebSocket connection has been established.
+    In event handlers this is already the case, but while building the page you need to
+    [`await client.connected()`](/documentation/page#wait_for_client_connection) first.
 ''')
 def storage_demo():
     from nicegui import app
@@ -107,12 +113,8 @@ def page_visits():
 def ui_state():
     from nicegui import app
 
-    # @ui.page('/')
-    # def index():
-    #     ui.textarea('This note is kept between visits') \
-    #         .classes('w-full').bind_value(app.storage.user, 'note')
-    # END OF DEMO
-    ui.textarea('This note is kept between visits').classes('w-full').bind_value(app.storage.user, 'note')
+    ui.textarea('This note is kept between visits').classes('w-full') \
+        .bind_value(app.storage.user, 'note')
 
 
 @doc.demo('Storing data per browser tab', '''
@@ -144,10 +146,9 @@ def max_tab_storage_age():
     # app.storage.max_tab_storage_age = timedelta(minutes=1).total_seconds()
     ui.label(f'Tab storage age: {timedelta(minutes=1).total_seconds()} seconds')  # HIDE
 
-    @ui.page('/')
-    def index():
-        # ui.label(f'Tab storage age: {app.storage.max_tab_storage_age} seconds')
-        pass  # HIDE
+    # @ui.page('/')
+    # def index():
+    #    ui.label(f'Tab storage age: {app.storage.max_tab_storage_age} seconds')
 
 
 @doc.demo('Short-term memory', '''
@@ -190,6 +191,8 @@ doc.text('Redis storage', '''
     and provide the `NICEGUI_REDIS_URL` environment variable to point to your Redis server.
     Our [Redis storage example](https://github.com/zauberzeug/nicegui/tree/main/examples/redis_storage) shows
     how you can setup it up with a reverse proxy or load balancer.
+    To ensure connections are kept to the minimum, you should start the Redis server with `--timeout <seconds>` CLI option
+    or set env variable `REDIS_TIMEOUT`.
 
     Please note that the Redis sync always contains all the data, not only the changed values.
 

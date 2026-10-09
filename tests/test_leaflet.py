@@ -1,19 +1,29 @@
+import base64
+import gc
 import time
+import weakref
 
-from nicegui import ui
-from nicegui.testing import Screen
+from fastapi import Response
+
+from nicegui import app, ui
+from nicegui.testing import Screen, User
 
 
 def test_leaflet(screen: Screen):
-    m = ui.leaflet(center=(51.505, -0.09), zoom=13)
-    ui.label().bind_text_from(m, 'center', lambda center: f'Center: {center[0]:.3f}, {center[1]:.3f}')
-    ui.label().bind_text_from(m, 'zoom', lambda zoom: f'Zoom: {zoom}')
+    m = None
 
-    ui.button('Zoom in', on_click=lambda: m.set_zoom(m.zoom + 1))
-    ui.button('Zoom out', on_click=lambda: m.set_zoom(m.zoom - 1))
+    @ui.page('/')
+    def page():
+        nonlocal m
+        m = ui.leaflet(center=(51.505, -0.09), zoom=13)
+        ui.label().bind_text_from(m, 'center', lambda center: f'Center: {center[0]:.3f}, {center[1]:.3f}')
+        ui.label().bind_text_from(m, 'zoom', lambda zoom: f'Zoom: {zoom}')
 
-    ui.button('Berlin', on_click=lambda: m.set_center((52.520, 13.405)))
-    ui.button('London', on_click=lambda: m.set_center((51.505, -0.090)))
+        ui.button('Zoom in', on_click=lambda: m.set_zoom(m.zoom + 1))
+        ui.button('Zoom out', on_click=lambda: m.set_zoom(m.zoom - 1))
+
+        ui.button('Berlin', on_click=lambda: m.set_center((52.520, 13.405)))
+        ui.button('London', on_click=lambda: m.set_center((51.505, -0.090)))
 
     screen.open('/')
     assert screen.find_all_by_class('leaflet-pane')
@@ -36,3 +46,55 @@ def test_leaflet(screen: Screen):
 
     screen.click('London')
     screen.should_contain('Center: 51.505, -0.090')
+
+
+def test_await_initialized_twice(screen: Screen):
+    @ui.page('/')
+    async def page():
+        m = ui.leaflet()
+        await m.initialized()
+        await m.initialized()  # should not cause re-rendering warning
+        ui.label('Leaflet initialized')
+
+    screen.open('/')
+    screen.should_contain('Leaflet initialized')
+    assert not screen.caplog.records
+
+
+def test_leaflet_unhide(screen: Screen):
+    requested_tiles = set()
+
+    @app.get('/mock_tile/{z}/{x}/{y}')
+    def mock_tile(z: str, x: str, y: str) -> Response:
+        requested_tiles.add((z, x, y))
+        return Response(base64.b64decode('R0lGODlhAQABAIAAAP///wAAACwAAAAAAQABAAACAkQBADs='))
+
+    @ui.page('/')
+    def page():
+        with ui.card().classes('w-full h-64') as card:
+            ui.leaflet().wms_layer(url_template='/mock_tile/{{z}}/{{x}}/{{y}}')
+            card.visible = False
+        ui.button('Show map card', on_click=lambda: card.set_visibility(True))
+
+    screen.open('/')
+    screen.click('Show map card')
+    screen.wait(0.5)
+    assert len(requested_tiles) == 8
+
+
+async def test_leaflet_is_collected_after_client_deletion(user: User):
+    held = []  # stands in for a timer or handler holding the map
+    objects: weakref.WeakSet = weakref.WeakSet()
+
+    @ui.page('/')
+    def page():
+        m = ui.leaflet(center=(51.5, -0.09))
+        held.append(m)
+        objects.add(m)
+
+    await user.open('/')
+    user.client.delete()
+    held[0].marker(latlng=(51.5, -0.09))  # late access puts the map into the Layer/Leaflet reference cycle
+    held.clear()  # the timer finishes and drops its reference
+    gc.collect()
+    assert len(objects) == 0

@@ -1,6 +1,5 @@
-import sys
 from datetime import datetime, timedelta, timezone
-from typing import List
+from typing import Any
 
 import pandas as pd
 import polars as pl
@@ -11,14 +10,14 @@ from nicegui import ui
 from nicegui.testing import Screen
 
 
-def columns() -> List:
+def columns() -> list:
     return [
         {'name': 'name', 'label': 'Name', 'field': 'name', 'required': True},
         {'name': 'age', 'label': 'Age', 'field': 'age', 'sortable': True},
     ]
 
 
-def rows() -> List:
+def rows() -> list:
     return [
         {'id': 0, 'name': 'Alice', 'age': 18},
         {'id': 1, 'name': 'Bob', 'age': 21},
@@ -27,7 +26,9 @@ def rows() -> List:
 
 
 def test_table(screen: Screen):
-    ui.table(title='My Team', columns=columns(), rows=rows())
+    @ui.page('/')
+    def page():
+        ui.table(title='My Team', columns=columns(), rows=rows())
 
     screen.open('/')
     screen.should_contain('My Team')
@@ -38,7 +39,9 @@ def test_table(screen: Screen):
 
 
 def test_pagination_int(screen: Screen):
-    ui.table(columns=columns(), rows=rows(), pagination=2)
+    @ui.page('/')
+    def page():
+        ui.table(columns=columns(), rows=rows(), pagination=2)
 
     screen.open('/')
     screen.should_contain('Alice')
@@ -48,7 +51,9 @@ def test_pagination_int(screen: Screen):
 
 
 def test_pagination_dict(screen: Screen):
-    ui.table(columns=columns(), rows=rows(), pagination={'rowsPerPage': 2})
+    @ui.page('/')
+    def page():
+        ui.table(columns=columns(), rows=rows(), pagination={'rowsPerPage': 2})
 
     screen.open('/')
     screen.should_contain('Alice')
@@ -58,8 +63,11 @@ def test_pagination_dict(screen: Screen):
 
 
 def test_filter(screen: Screen):
-    table = ui.table(columns=columns(), rows=rows())
-    ui.input('Search by name').bind_value(table, 'filter')
+    @ui.page('/')
+    def page():
+        table = ui.table(columns=columns(), rows=rows())
+        ui.input('Search by name').bind_value(table, 'filter')
+        ui.label().bind_text_from(table, 'filter', lambda value: f'Filter: {value}')
 
     screen.open('/')
     screen.should_contain('Alice')
@@ -68,15 +76,18 @@ def test_filter(screen: Screen):
 
     element = screen.selenium.find_element(By.XPATH, '//*[@aria-label="Search by name"]')
     element.send_keys('e')
+    screen.should_contain('Filter: e')
     screen.should_contain('Alice')
     screen.should_not_contain('Bob')
     screen.should_contain('Lionel')
 
 
 def test_add_remove(screen: Screen):
-    table = ui.table(columns=columns(), rows=rows())
-    ui.button('Add', on_click=lambda: table.add_row({'id': 3, 'name': 'Carol', 'age': 32}))
-    ui.button('Remove', on_click=lambda: table.remove_row(table.rows[0]))
+    @ui.page('/')
+    def page():
+        table = ui.table(columns=columns(), rows=rows())
+        ui.button('Add', on_click=lambda: table.add_row({'id': 3, 'name': 'Carol', 'age': 32}))
+        ui.button('Remove', on_click=lambda: table.remove_row(table.rows[0]))
 
     screen.open('/')
     screen.click('Add')
@@ -88,19 +99,22 @@ def test_add_remove(screen: Screen):
 
 
 def test_slots(screen: Screen):
-    with ui.table(columns=columns(), rows=rows()) as table:
-        with table.add_slot('top-row'):
-            with table.row():
-                with table.cell():
-                    ui.label('This is the top slot.')
-        table.add_slot('body', '''
-            <q-tr :props="props">
-                <q-td key="name" :props="props">overridden</q-td>
-                <q-td key="age" :props="props">
-                    <q-badge color="green">{{ props.row.age }}</q-badge>
-                </q-td>
-            </q-tr>
-        ''')
+    @ui.page('/')
+    def page():
+        with ui.table(columns=columns(), rows=rows()) as table:
+            table.add_slot('top-row', '''
+                <q-tr>
+                    <q-th>This is the top slot.</q-th>
+                </q-tr>
+            ''')
+            table.add_slot('body', '''
+                <q-tr :props="props">
+                    <q-td key="name" :props="props">overridden</q-td>
+                    <q-td key="age" :props="props">
+                        <q-badge color="green">{{ props.row.age }}</q-badge>
+                    </q-td>
+                </q-tr>
+            ''')
 
     screen.open('/')
     screen.should_contain('This is the top slot.')
@@ -109,8 +123,15 @@ def test_slots(screen: Screen):
     screen.should_contain('21')
 
 
-def test_single_selection(screen: Screen):
-    ui.table(columns=columns(), rows=rows(), selection='single')
+def test_selection(screen: Screen):
+    table = None
+
+    @ui.page('/')
+    def page():
+        nonlocal table
+        table = ui.table(columns=columns(), rows=rows(), selection='single')
+        ui.radio({None: 'none', 'single': 'single', 'multiple': 'multiple'},
+                 on_change=lambda e: table.set_selection(e.value))
 
     screen.open('/')
     screen.find('Alice').find_element(By.XPATH, 'preceding-sibling::td').click()
@@ -121,18 +142,35 @@ def test_single_selection(screen: Screen):
     screen.wait(0.5)
     screen.should_contain('1 record selected.')
 
+    screen.click('multiple')
+    screen.wait(0.5)
+
+    screen.find('Lionel').find_element(By.XPATH, 'preceding-sibling::td').click()
+    screen.wait(0.5)
+    screen.should_contain('2 records selected.')
+    assert table.selection == 'multiple'
+
+    screen.click('none')
+    screen.wait(0.5)
+    screen.should_not_contain('1 record selected.')
+    assert table.selection is None
+
 
 def test_dynamic_column_attributes(screen: Screen):
-    ui.table(columns=[{'name': 'age', 'label': 'Age', 'field': 'age', ':format': 'value => value + " years"'}],
-             rows=[{'name': 'Alice', 'age': 18}])
+    @ui.page('/')
+    def page():
+        ui.table(columns=[{'name': 'age', 'label': 'Age', 'field': 'age', ':format': 'value => value + " years"'}],
+                 rows=[{'name': 'Alice', 'age': 18}])
 
     screen.open('/')
     screen.should_contain('18 years')
 
 
 def test_remove_selection(screen: Screen):
-    t = ui.table(columns=columns(), rows=rows(), selection='single')
-    ui.button('Remove first row', on_click=lambda: t.remove_row(t.rows[0]))
+    @ui.page('/')
+    def page():
+        t = ui.table(columns=columns(), rows=rows(), selection='single')
+        ui.button('Remove first row', on_click=lambda: t.remove_row(t.rows[0]))
 
     screen.open('/')
     screen.find('Alice').find_element(By.XPATH, 'preceding-sibling::td').click()
@@ -145,16 +183,18 @@ def test_remove_selection(screen: Screen):
 
 
 def test_replace_rows(screen: Screen):
-    t = ui.table(columns=columns(), rows=rows())
+    @ui.page('/')
+    def page():
+        t = ui.table(columns=columns(), rows=rows())
 
-    def replace_rows_with_carol():
-        t.rows = [{'id': 3, 'name': 'Carol', 'age': 32}]
+        def replace_rows_with_carol():
+            t.rows = [{'id': 3, 'name': 'Carol', 'age': 32}]
 
-    def replace_rows_with_daniel():
-        t.update_rows([{'id': 4, 'name': 'Daniel', 'age': 33}])
+        def replace_rows_with_daniel():
+            t.update_rows([{'id': 4, 'name': 'Daniel', 'age': 33}])
 
-    ui.button('Replace rows with C.', on_click=replace_rows_with_carol)
-    ui.button('Replace rows with D.', on_click=replace_rows_with_daniel)
+        ui.button('Replace rows with C.', on_click=replace_rows_with_carol)
+        ui.button('Replace rows with D.', on_click=replace_rows_with_daniel)
 
     screen.open('/')
     screen.should_contain('Alice')
@@ -176,18 +216,20 @@ def test_replace_rows(screen: Screen):
 
 @pytest.mark.parametrize('df_type', ['pandas', 'polars'])
 def test_create_and_update_from_df(screen: Screen, df_type: str):
-    if df_type == 'pandas':
-        DataFrame = pd.DataFrame
-        df = DataFrame({'name': ['Alice', 'Bob'], 'age': [18, 21]})
-        table = ui.table.from_pandas(df)
-        update_from_df = table.update_from_pandas
-    else:
-        DataFrame = pl.DataFrame
-        df = DataFrame({'name': ['Alice', 'Bob'], 'age': [18, 21]})
-        table = ui.table.from_polars(df)
-        update_from_df = table.update_from_polars
+    @ui.page('/')
+    def page():
+        if df_type == 'pandas':
+            DataFrame = pd.DataFrame
+            df = DataFrame({'name': ['Alice', 'Bob'], 'age': [18, 21]})
+            table = ui.table.from_pandas(df)
+            update_from_df = table.update_from_pandas
+        else:
+            DataFrame = pl.DataFrame
+            df = DataFrame({'name': ['Alice', 'Bob'], 'age': [18, 21]})
+            table = ui.table.from_polars(df)
+            update_from_df = table.update_from_polars
 
-    ui.button('Update', on_click=lambda: update_from_df(DataFrame({'name': ['Lionel'], 'age': [19]})))
+        ui.button('Update', on_click=lambda: update_from_df(DataFrame({'name': ['Lionel'], 'age': [19]})))
 
     screen.open('/')
     screen.should_contain('Alice')
@@ -201,23 +243,24 @@ def test_create_and_update_from_df(screen: Screen, df_type: str):
 
 
 @pytest.mark.parametrize('df_type', ['pandas', 'polars'])
-@pytest.mark.skipif(sys.version_info[:2] == (3, 8), reason='Skipping test for Python 3.8')
 def test_problematic_datatypes(screen: Screen, df_type: str):
-    if df_type == 'pandas':
-        df = pd.DataFrame({
-            'Datetime_col': [datetime(2020, 1, 1)],
-            'Datetime_col_tz': [datetime(2020, 1, 2, tzinfo=timezone.utc)],
-            'Timedelta_col': [timedelta(days=5)],
-            'Complex_col': [1 + 2j],
-            'Period_col': pd.Series([pd.Period('2021-01')]),
-        })
-        ui.table.from_pandas(df)
-    else:
-        df = pl.DataFrame({
-            'Datetime_col': [datetime(2020, 1, 1)],
-            'Datetime_col_tz': [datetime(2020, 1, 2, tzinfo=timezone.utc)],
-        })
-        ui.table.from_polars(df)
+    @ui.page('/')
+    def page():
+        if df_type == 'pandas':
+            df = pd.DataFrame({
+                'Datetime_col': [datetime(2020, 1, 1)],
+                'Datetime_col_tz': [datetime(2020, 1, 2, tzinfo=timezone.utc)],
+                'Timedelta_col': [timedelta(days=5)],
+                'Complex_col': [1 + 2j],
+                'Period_col': pd.Series([pd.Period('2021-01')]),
+            })
+            ui.table.from_pandas(df)
+        else:
+            df = pl.DataFrame({
+                'Datetime_col': [datetime(2020, 1, 1)],
+                'Datetime_col_tz': [datetime(2020, 1, 2, tzinfo=timezone.utc)],
+            })
+            ui.table.from_polars(df)
 
     screen.open('/')
     screen.should_contain('Datetime_col')
@@ -260,10 +303,12 @@ def test_table_computed_props(screen: Screen):
 
 
 def test_infer_columns(screen: Screen):
-    ui.table(rows=[
-        {'name': 'Alice', 'age': 18},
-        {'name': 'Bob', 'age': 21},
-    ])
+    @ui.page('/')
+    def page():
+        ui.table(rows=[
+            {'name': 'Alice', 'age': 18},
+            {'name': 'Bob', 'age': 21},
+        ])
 
     screen.open('/')
     screen.should_contain('NAME')
@@ -275,14 +320,16 @@ def test_infer_columns(screen: Screen):
 
 
 def test_default_column_parameters(screen: Screen):
-    ui.table(rows=[
-        {'name': 'Alice', 'age': 18, 'city': 'London'},
-        {'name': 'Bob', 'age': 21, 'city': 'Paris'},
-    ], columns=[
-        {'name': 'name', 'label': 'Name', 'field': 'name'},
-        {'name': 'age', 'label': 'Age', 'field': 'age'},
-        {'name': 'city', 'label': 'City', 'field': 'city', 'sortable': False},
-    ], column_defaults={'sortable': True})
+    @ui.page('/')
+    def page():
+        ui.table(rows=[
+            {'name': 'Alice', 'age': 18, 'city': 'London'},
+            {'name': 'Bob', 'age': 21, 'city': 'Paris'},
+        ], columns=[
+            {'name': 'name', 'label': 'Name', 'field': 'name'},
+            {'name': 'age', 'label': 'Age', 'field': 'age'},
+            {'name': 'city', 'label': 'City', 'field': 'city', 'sortable': False},
+        ], column_defaults={'sortable': True})
 
     screen.open('/')
     screen.should_contain('Name')
@@ -298,35 +345,37 @@ def test_default_column_parameters(screen: Screen):
 
 @pytest.mark.parametrize('df_type', ['pandas', 'polars'])
 def test_columns_from_df(screen: Screen, df_type: str):
-    if df_type == 'pandas':
-        persons = ui.table.from_pandas(pd.DataFrame({'name': ['Alice', 'Bob'], 'age': [18, 21]}))
-        cars = ui.table.from_pandas(pd.DataFrame({'make': ['Ford', 'Toyota'], 'model': ['Focus', 'Corolla']}),
-                                    columns=[{'name': 'make', 'label': 'make', 'field': 'make'}])
-        DataFrame = pd.DataFrame
-        update_persons_from_df = persons.update_from_pandas
-        update_cars_from_df = cars.update_from_pandas
-    else:
-        persons = ui.table.from_polars(pl.DataFrame({'name': ['Alice', 'Bob'], 'age': [18, 21]}))
-        cars = ui.table.from_polars(pl.DataFrame({'make': ['Ford', 'Toyota'], 'model': ['Focus', 'Corolla']}),
-                                    columns=[{'name': 'make', 'label': 'make', 'field': 'make'}])
-        DataFrame = pl.DataFrame
-        update_persons_from_df = persons.update_from_polars
-        update_cars_from_df = cars.update_from_polars
+    @ui.page('/')
+    def page():
+        if df_type == 'pandas':
+            persons = ui.table.from_pandas(pd.DataFrame({'name': ['Alice', 'Bob'], 'age': [18, 21]}))
+            cars = ui.table.from_pandas(pd.DataFrame({'make': ['Ford', 'Toyota'], 'model': ['Focus', 'Corolla']}),
+                                        columns=[{'name': 'make', 'label': 'make', 'field': 'make'}])
+            DataFrame = pd.DataFrame
+            update_persons_from_df = persons.update_from_pandas
+            update_cars_from_df = cars.update_from_pandas
+        else:
+            persons = ui.table.from_polars(pl.DataFrame({'name': ['Alice', 'Bob'], 'age': [18, 21]}))
+            cars = ui.table.from_polars(pl.DataFrame({'make': ['Ford', 'Toyota'], 'model': ['Focus', 'Corolla']}),
+                                        columns=[{'name': 'make', 'label': 'make', 'field': 'make'}])
+            DataFrame = pl.DataFrame
+            update_persons_from_df = persons.update_from_polars
+            update_cars_from_df = cars.update_from_polars
 
-    ui.button('Update persons without columns',
-              on_click=lambda: update_persons_from_df(DataFrame({'name': ['Dan'], 'age': [5], 'sex': ['male']})))
+        ui.button('Update persons without columns',
+                  on_click=lambda: update_persons_from_df(DataFrame({'name': ['Dan'], 'age': [5], 'sex': ['male']})))
 
-    ui.button('Update persons with columns',
-              on_click=lambda: update_persons_from_df(DataFrame({'name': ['Stephen'], 'age': [33]}),
-                                                      columns=[{'name': 'name', 'label': 'Name', 'field': 'name'}]))
+        ui.button('Update persons with columns',
+                  on_click=lambda: update_persons_from_df(DataFrame({'name': ['Stephen'], 'age': [33]}),
+                                                          columns=[{'name': 'name', 'label': 'Name', 'field': 'name'}]))
 
-    ui.button('Update cars without columns',
-              on_click=lambda: update_cars_from_df(DataFrame({'make': ['Honda'], 'model': ['Civic']})))
+        ui.button('Update cars without columns',
+                  on_click=lambda: update_cars_from_df(DataFrame({'make': ['Honda'], 'model': ['Civic']})))
 
-    ui.button('Update cars with columns',
-              on_click=lambda: update_cars_from_df(DataFrame({'make': ['Hyundai'], 'model': ['i30']}),
-                                                   columns=[{'name': 'make', 'label': 'make', 'field': 'make'},
-                                                            {'name': 'model', 'label': 'model', 'field': 'model'}]))
+        ui.button('Update cars with columns',
+                  on_click=lambda: update_cars_from_df(DataFrame({'make': ['Hyundai'], 'model': ['i30']}),
+                                                       columns=[{'name': 'make', 'label': 'make', 'field': 'make'},
+                                                                {'name': 'model', 'label': 'model', 'field': 'model'}]))
 
     screen.open('/')
     screen.should_contain('name')
@@ -350,3 +399,85 @@ def test_columns_from_df(screen: Screen, df_type: str):
     screen.click('Update cars with columns')  # updated columns via parameter
     screen.should_contain('Hyundai')
     screen.should_contain('i30')
+
+
+def test_new_slots(screen: Screen):
+    @ui.page('/')
+    def page():
+        table = ui.table(rows=[{'name': 'Alice'}, {'name': 'Bob'}, {'name': 'Carol'}])
+        with table.add_slot('body-cell-name'):
+            with table.cell():
+                ui.button().props(':label="props.value"') \
+                    .on('click', js_handler='() => emit(props.value)', handler=lambda e: ui.notify(f'Clicked {e.args}'))
+
+    screen.open('/')
+    screen.should_contain('Alice')
+
+    screen.click('Alice')
+    screen.should_contain('Clicked Alice')
+
+
+def test_fullscreen_scroll_behavior(screen: Screen):
+    @ui.page('/')
+    def page():
+        ui.add_css('html { scroll-behavior: smooth }')
+        ui.link('Go to bottom', '#bottom')
+        ui.link_target('bottom').classes('mt-[2000px]')
+        table = ui.table(rows=[{'name': 'Alice'}])
+        with table.add_slot('bottom'):
+            ui.button('Toggle fullscreen', on_click=table.toggle_fullscreen).props('flat')
+
+    screen.open('/')
+    screen.click('Go to bottom')
+    screen.wait(1)
+    position = screen.selenium.execute_script('return window.scrollY')
+    assert position > 1000
+
+    screen.click('Toggle fullscreen')
+    screen.wait(0.5)
+    screen.click('Toggle fullscreen')
+    screen.wait(0.5)
+    assert screen.selenium.execute_script('return window.scrollY') == position
+
+
+def test_client_side_fullscreen_syncs_back(screen: Screen):
+    table = None
+
+    @ui.page('/')
+    def page():
+        nonlocal table
+        table = ui.table(rows=[{'name': 'Alice'}])
+        table.add_slot('top', '<q-btn dense flat label="FS" @click="props.toggleFullscreen" />')
+
+    screen.open('/')
+    assert table.is_fullscreen is False
+
+    screen.click('FS')
+    screen.wait_for(lambda: table.is_fullscreen is True)
+    screen.wait(0.5)  # HACK: wait for the echoed fullscreen update, so the button is not re-rendered mid-click
+
+    screen.click('FS')
+    screen.wait_for(lambda: table.is_fullscreen is False)
+
+
+@pytest.mark.parametrize('index,expected,unexpected', [
+    (pd.Index([100, 200], name='id'), ['id', '100', '200'], []),
+    (pd.RangeIndex(start=100, stop=102, name='index'), ['index', '100', '101'], []),
+    (pd.Index(['x', 'y']), ['index', 'x', 'y'], []),
+    (pd.MultiIndex.from_tuples([('A', 1), ('B', 2)], names=['char', 'num']), ['char', 'num', 'A', 'B', '1', '2'], []),
+    (pd.RangeIndex(start=0, stop=2), [], ['index']),
+])
+def test_pandas_with_index(screen: Screen, index: Any, expected: list[str], unexpected: list[str]):
+    @ui.page('/')
+    def page():
+        df = pd.DataFrame({'value': [42, 43]}, index=index)
+        ui.table.from_pandas(df)
+
+    screen.open('/')
+    screen.should_contain('value')
+    screen.should_contain('42')
+    screen.should_contain('43')
+    for item in expected:
+        screen.should_contain(item)
+    for item in unexpected:
+        screen.should_not_contain(item)

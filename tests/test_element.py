@@ -1,4 +1,7 @@
-from typing import Dict, Optional
+import contextlib
+import platform
+import weakref
+from pathlib import Path
 
 import pytest
 from selenium.webdriver.common.by import By
@@ -6,11 +9,16 @@ from selenium.webdriver.common.by import By
 from nicegui import background_tasks, ui
 from nicegui.props import Props
 from nicegui.style import Style
-from nicegui.testing import Screen
+from nicegui.testing import Screen, User
 
 
 def test_classes(screen: Screen):
-    label = ui.label('Some label')
+    label = None
+
+    @ui.page('/')
+    def page():
+        nonlocal label
+        label = ui.label('Some label')
 
     def assert_classes(classes: str) -> None:
         assert screen.selenium.find_element(By.XPATH,
@@ -41,6 +49,9 @@ def test_classes(screen: Screen):
     label.classes(toggle='bg-red-500')
     assert_classes('four')
 
+    label.classes.append('five')
+    assert_classes('four five')
+
 
 @pytest.mark.parametrize('value,expected', [
     (None, {}),
@@ -49,7 +60,7 @@ def test_classes(screen: Screen):
     ('transform: translate(120.0px, 50%)', {'transform': 'translate(120.0px, 50%)'}),
     ('box-shadow: 0 0 0.5em #1976d2', {'box-shadow': '0 0 0.5em #1976d2'}),
 ])
-def test_style_parsing(value: Optional[str], expected: Dict[str, str]):
+def test_style_parsing(value: str | None, expected: dict[str, str]):
     assert Style.parse(value) == expected
 
 
@@ -59,6 +70,7 @@ def test_style_parsing(value: Optional[str], expected: Dict[str, str]):
     ('loading percentage=12.5', {'loading': True, 'percentage': '12.5'}),
     ('size=50%', {'size': '50%'}),
     ('href=http://192.168.42.100/', {'href': 'http://192.168.42.100/'}),
+    ('href=http://192.168.42.100/?foo=bar&baz=qux#anchor', {'href': 'http://192.168.42.100/?foo=bar&baz=qux#anchor'}),
     ('hint="Your \\"given\\" name"', {'hint': 'Your "given" name'}),
     ('input-style="{ color: #ff0000 }"', {'input-style': '{ color: #ff0000 }'}),
     ('accept=.jpeg,.jpg,.png', {'accept': '.jpeg,.jpg,.png'}),
@@ -74,13 +86,22 @@ def test_style_parsing(value: Optional[str], expected: Dict[str, str]):
     ("input-style='{ color: #ff0000 }'", {'input-style': '{ color: #ff0000 }'}),
     ("""input-style='{ myquote: "quote" }'""", {'input-style': '{ myquote: "quote" }'}),
     ('filename=foo=bar.txt', {'filename': 'foo=bar.txt'}),
+    ('array=["one"]', {'array': ['one']}),
+    ('array=["one", "two"]', {'array': ['one', 'two']}),
+    ('''object={'one': "foo"} baz''', {'object': {'one': 'foo'}, 'baz': True}),
+    ('''object={'one': "foo", "two": "bar"}''', {'object': {'one': 'foo', 'two': 'bar'}}),
 ])
-def test_props_parsing(value: Optional[str], expected: Dict[str, str]):
+def test_props_parsing(value: str | None, expected: dict[str, str]):
     assert Props.parse(value) == expected
 
 
 def test_style(screen: Screen):
-    label = ui.label('Some label')
+    label = None
+
+    @ui.page('/')
+    def page():
+        nonlocal label
+        label = ui.label('Some label')
 
     def assert_style(style: str) -> None:
         assert screen.selenium.find_element(By.XPATH, f'//*[normalize-space(@style)="{style}" and text()="Some label"]')
@@ -110,9 +131,17 @@ def test_style(screen: Screen):
     label.style('color: blue;')
     assert_style('text-decoration: underline; color: blue;')
 
+    label.style.update({'color': 'red'})
+    assert_style('text-decoration: underline; color: red;')
+
 
 def test_props(screen: Screen):
-    input_ = ui.input()
+    input_ = None
+
+    @ui.page('/')
+    def page():
+        nonlocal input_
+        input_ = ui.input()
 
     def assert_props(*props: str) -> None:
         class_conditions = [f'contains(@class, "q-field--{prop}")' for prop in props]
@@ -131,18 +160,23 @@ def test_props(screen: Screen):
     input_.props(remove='dark')
     assert_props('standard')
 
+    input_.props.update({'dark': True})
+    assert_props('standard', 'dark')
+
 
 def test_move(screen: Screen):
-    with ui.card() as a:
-        ui.label('A')
-        x = ui.label('X')
+    @ui.page('/')
+    def page():
+        with ui.card() as a:
+            ui.label('A')
+            x = ui.label('X')
 
-    with ui.card() as b:
-        ui.label('B')
+        with ui.card() as b:
+            ui.label('B')
 
-    ui.button('Move X to A', on_click=lambda: x.move(a))
-    ui.button('Move X to B', on_click=lambda: x.move(b))
-    ui.button('Move X to top', on_click=lambda: x.move(target_index=0))
+        ui.button('Move X to A', on_click=lambda: x.move(a))
+        ui.button('Move X to B', on_click=lambda: x.move(b))
+        ui.button('Move X to top', on_click=lambda: x.move(target_index=0))
 
     screen.open('/')
     assert screen.find('A').location['y'] < screen.find('X').location['y'] < screen.find('B').location['y']
@@ -161,18 +195,20 @@ def test_move(screen: Screen):
 
 
 def test_move_slots(screen: Screen):
-    with ui.expansion(value=True) as a:
-        with a.add_slot('header'):
-            ui.label('A')
-        x = ui.label('X')
+    @ui.page('/')
+    def page():
+        with ui.expansion(value=True) as a:
+            with a.add_slot('header'):
+                ui.label('A')
+            x = ui.label('X')
 
-    with ui.expansion(value=True) as b:
-        with b.add_slot('header'):
-            ui.label('B')
+        with ui.expansion(value=True) as b:
+            with b.add_slot('header'):
+                ui.label('B')
 
-    ui.button('Move X to header', on_click=lambda: x.move(target_slot='header'))
-    ui.button('Move X to B', on_click=lambda: x.move(b))
-    ui.button('Move X to top', on_click=lambda: x.move(target_index=0))
+        ui.button('Move X to header', on_click=lambda: x.move(target_slot='header'))
+        ui.button('Move X to B', on_click=lambda: x.move(b))
+        ui.button('Move X to top', on_click=lambda: x.move(target_index=0))
 
     screen.open('/')
     assert screen.find('A').location['y'] < screen.find('X').location['y'], 'X is in A.default'
@@ -190,13 +226,62 @@ def test_move_slots(screen: Screen):
     assert screen.find('B').location['y'] < screen.find('X').location['y'], 'X is in B.default'
 
 
+async def test_move_to_invalid_slot_keeps_element_in_place(user: User):
+    card = label = other = None
+
+    @ui.page('/')
+    def page():
+        nonlocal card, label, other
+        card = ui.card()
+        with card:
+            label = ui.label('X')
+        other = ui.card()
+
+    await user.open('/')
+    assert isinstance(card, ui.card) and isinstance(label, ui.label) and isinstance(other, ui.card)
+
+    with pytest.raises(ValueError, match='does not exist'):
+        label.move(other, target_slot='does-not-exist')
+
+    assert label in card.default_slot.children, 'a failed move must keep the element in its original slot'
+    await user.should_see('X')
+    label.delete()  # used to raise ValueError('list.remove(x): x not in list')
+    await user.should_not_see('X')
+
+
+async def test_move_into_descendant_is_rejected(user: User):
+    outer = inner = label = other = None
+
+    @ui.page('/')
+    def page():
+        nonlocal outer, inner, label, other
+        with ui.card() as outer:
+            with ui.card() as inner:
+                label = ui.label('X')
+        other = ui.card()
+
+    await user.open('/')
+    root = outer.parent_slot
+    with pytest.raises(ValueError, match='itself or one of its descendants'):
+        outer.move(inner)
+    with pytest.raises(ValueError, match='itself or one of its descendants'):
+        outer.move(outer)
+    assert outer in root.children, 'a rejected move must keep the element in its original slot'
+    assert list(outer.descendants()) == [inner, label]
+    await user.should_see('X')
+    label.move(other)
+    assert list(other.descendants()) == [label]
+
+
 def test_xss(screen: Screen):
-    ui.label('</script><script>alert(1)</script>')
-    ui.label('<b>Bold 1</b>, `code`, copy&paste, multi\nline')
-    ui.button('Button', on_click=lambda: (
-        ui.label('</script><script>alert(2)</script>'),
-        ui.label('<b>Bold 2</b>, `code`, copy&paste, multi\nline'),
-    ))
+    @ui.page('/')
+    def page():
+        ui.label('</script><script>alert(1)</script>')
+        ui.label('<b>Bold 1</b>, `code`, copy&paste, multi\nline')
+        ui.button('Button', on_click=lambda: (
+            ui.label('</script><script>alert(2)</script>'),
+            ui.label('<b>Bold 2</b>, `code`, copy&paste, multi\nline'),
+        ))
 
     screen.open('/')
     screen.click('Button')
@@ -206,125 +291,173 @@ def test_xss(screen: Screen):
     screen.should_contain('<b>Bold 2</b>, `code`, copy&paste, multi\nline')
 
 
-def test_default_props(nicegui_reset_globals):
-    ui.button.default_props('rounded outline')
-    button_a = ui.button('Button A')
-    button_b = ui.button('Button B')
-    assert button_a.props.get('rounded') is True, 'default props are set'
-    assert button_a.props.get('outline') is True
-    assert button_b.props.get('rounded') is True
-    assert button_b.props.get('outline') is True
+def test_run_method_xss(screen: Screen):
+    @ui.page('/')
+    def page():
+        ui.button('XSS 1', on_click=lambda e: e.sender.run_method('console.error("X" + "SS")'))
+        ui.button('XSS 2', on_click=lambda e: e.sender.run_method('x", console.error("X" + "SS"), "y'))
 
-    ui.button.default_props(remove='outline')
-    button_c = ui.button('Button C')
-    assert button_c.props.get('outline') is None, '"outline" prop was removed'
-    assert button_c.props.get('rounded') is True, 'other props are still there'
-
-    ui.input.default_props('filled')
-    input_a = ui.input()
-    assert input_a.props.get('filled') is True
-    assert input_a.props.get('rounded') is None, 'default props of ui.button do not affect ui.input'
-
-    class MyButton(ui.button):
-        pass
-    MyButton.default_props('flat')
-    button_d = MyButton()
-    button_e = ui.button()
-    assert button_d.props.get('flat') is True
-    assert button_d.props.get('rounded') is True, 'default props are inherited'
-    assert button_e.props.get('flat') is None, 'default props of MyButton do not affect ui.button'
-    assert button_e.props.get('rounded') is True
-
-    ui.button.default_props('no-caps').default_props('no-wrap')
-    button_f = ui.button()
-    assert button_f.props.get('no-caps') is True
-    assert button_f.props.get('no-wrap') is True
+    screen.allowed_js_errors.append('Method "console.error("X" + "SS")" not found.')
+    screen.allowed_js_errors.append('Method "x", console.error("X" + "SS"), "y" not found.')
+    screen.open('/')
+    screen.click('XSS 1')
+    screen.click('XSS 2')
+    screen.wait(1)
+    assert 'XSS' not in screen.render_js_logs()
+    screen.assert_py_logger('ERROR', 'Method "console.error("X" + "SS")" not found.')
+    screen.assert_py_logger('ERROR', 'Method "x", console.error("X" + "SS"), "y" not found.')
 
 
-def test_default_classes(nicegui_reset_globals):
-    ui.button.default_classes('bg-white text-green')
-    button_a = ui.button('Button A')
-    button_b = ui.button('Button B')
-    assert 'bg-white' in button_a.classes, 'default classes are set'
-    assert 'text-green' in button_a.classes
-    assert 'bg-white' in button_b.classes
-    assert 'text-green' in button_b.classes
+def test_get_computed_prop_xss(screen: Screen):
+    @ui.page('/')
+    def page():
+        ui.button('XSS 1', on_click=lambda e: e.sender.get_computed_prop('console.error("X" + "SS")'))
+        ui.button('XSS 2', on_click=lambda e: e.sender.get_computed_prop('x", console.error("X" + "SS"), "y'))
 
-    ui.button.default_classes(remove='text-green')
-    button_c = ui.button('Button C')
-    assert 'text-green' not in button_c.classes, '"text-green" class was removed'
-    assert 'bg-white' in button_c.classes, 'other classes are still there'
-
-    ui.input.default_classes('text-black')
-    input_a = ui.input()
-    assert 'text-black' in input_a.classes
-    assert 'bg-white' not in input_a.classes, 'default classes of ui.button do not affect ui.input'
-
-    class MyButton(ui.button):
-        pass
-    MyButton.default_classes('w-full')
-    button_d = MyButton()
-    button_e = ui.button()
-    assert 'w-full' in button_d.classes
-    assert 'bg-white' in button_d.classes, 'default classes are inherited'
-    assert 'w-full' not in button_e.classes, 'default classes of MyButton do not affect ui.button'
-    assert 'bg-white' in button_e.classes
-
-    ui.button.default_classes('h-40').default_classes('max-h-80')
-    button_f = ui.button()
-    assert 'h-40' in button_f.classes
-    assert 'max-h-80' in button_f.classes
+    screen.allowed_js_errors.append('Method "console.error("X" + "SS")" not found.')
+    screen.allowed_js_errors.append('Method "x", console.error("X" + "SS"), "y" not found.')
+    screen.open('/')
+    screen.click('XSS 1')
+    screen.click('XSS 2')
+    screen.wait(1)
+    assert 'XSS' not in screen.render_js_logs()
 
 
-def test_default_style(nicegui_reset_globals):
-    ui.button.default_style('color: green; font-size: 200%')
-    button_a = ui.button('Button A')
-    button_b = ui.button('Button B')
-    assert button_a.style.get('color') == 'green', 'default style is set'
-    assert button_a.style.get('font-size') == '200%'
-    assert button_b.style.get('color') == 'green'
-    assert button_b.style.get('font-size') == '200%'
+def test_default_props(screen: Screen):
+    @ui.page('/')
+    def page():
+        ui.button.default_props('rounded outline')
+        button_a = ui.button('Button A')
+        button_b = ui.button('Button B')
+        assert button_a.props.get('rounded') is True, 'default props are set'
+        assert button_a.props.get('outline') is True
+        assert button_b.props.get('rounded') is True
+        assert button_b.props.get('outline') is True
 
-    ui.button.default_style(remove='color: green')
-    button_c = ui.button('Button C')
-    assert button_c.style.get('color') is None, '"color" style was removed'
-    assert button_c.style.get('font-size') == '200%', 'other style are still there'
+        ui.button.default_props(remove='outline')
+        button_c = ui.button('Button C')
+        assert button_c.props.get('outline') is None, '"outline" prop was removed'
+        assert button_c.props.get('rounded') is True, 'other props are still there'
 
-    ui.input.default_style('font-weight: 300')
-    input_a = ui.input()
-    assert input_a.style.get('font-weight') == '300'
-    assert input_a.style.get('font-size') is None, 'default style of ui.button does not affect ui.input'
+        ui.input.default_props('filled')
+        input_a = ui.input()
+        assert input_a.props.get('filled') is True
+        assert input_a.props.get('rounded') is None, 'default props of ui.button do not affect ui.input'
 
-    class MyButton(ui.button):
-        pass
-    MyButton.default_style('font-family: courier')
-    button_d = MyButton()
-    button_e = ui.button()
-    assert button_d.style.get('font-family') == 'courier'
-    assert button_d.style.get('font-size') == '200%', 'default style is inherited'
-    assert button_e.style.get('font-family') is None, 'default style of MyButton does not affect ui.button'
-    assert button_e.style.get('font-size') == '200%'
+        class MyButton(ui.button):
+            pass
+        MyButton.default_props('flat')
+        button_d = MyButton()
+        button_e = ui.button()
+        assert button_d.props.get('flat') is True
+        assert button_d.props.get('rounded') is True, 'default props are inherited'
+        assert button_e.props.get('flat') is None, 'default props of MyButton do not affect ui.button'
+        assert button_e.props.get('rounded') is True
 
-    ui.button.default_style('border: 2px').default_style('padding: 30px')
-    button_f = ui.button()
-    assert button_f.style.get('border') == '2px'
-    assert button_f.style.get('padding') == '30px'
+        ui.button.default_props('no-caps').default_props('no-wrap')
+        button_f = ui.button()
+        assert button_f.props.get('no-caps') is True
+        assert button_f.props.get('no-wrap') is True
+
+    screen.open('/')
+
+
+def test_default_classes(screen: Screen):
+    @ui.page('/')
+    def page():
+        ui.button.default_classes('bg-white text-green')
+        button_a = ui.button('Button A')
+        button_b = ui.button('Button B')
+        assert 'bg-white' in button_a.classes, 'default classes are set'
+        assert 'text-green' in button_a.classes
+        assert 'bg-white' in button_b.classes
+        assert 'text-green' in button_b.classes
+
+        ui.button.default_classes(remove='text-green')
+        button_c = ui.button('Button C')
+        assert 'text-green' not in button_c.classes, '"text-green" class was removed'
+        assert 'bg-white' in button_c.classes, 'other classes are still there'
+
+        ui.input.default_classes('text-black')
+        input_a = ui.input()
+        assert 'text-black' in input_a.classes
+        assert 'bg-white' not in input_a.classes, 'default classes of ui.button do not affect ui.input'
+
+        class MyButton(ui.button):
+            pass
+        MyButton.default_classes('w-full')
+        button_d = MyButton()
+        button_e = ui.button()
+        assert 'w-full' in button_d.classes
+        assert 'bg-white' in button_d.classes, 'default classes are inherited'
+        assert 'w-full' not in button_e.classes, 'default classes of MyButton do not affect ui.button'
+        assert 'bg-white' in button_e.classes
+
+        ui.button.default_classes('h-40').default_classes('max-h-80')
+        button_f = ui.button()
+        assert 'h-40' in button_f.classes
+        assert 'max-h-80' in button_f.classes
+
+    screen.open('/')
+
+
+def test_default_style(screen: Screen):
+    @ui.page('/')
+    def page():
+        ui.button.default_style('color: green; font-size: 200%')
+        button_a = ui.button('Button A')
+        button_b = ui.button('Button B')
+        assert button_a.style.get('color') == 'green', 'default style is set'
+        assert button_a.style.get('font-size') == '200%'
+        assert button_b.style.get('color') == 'green'
+        assert button_b.style.get('font-size') == '200%'
+
+        ui.button.default_style(remove='color: green')
+        button_c = ui.button('Button C')
+        assert button_c.style.get('color') is None, '"color" style was removed'
+        assert button_c.style.get('font-size') == '200%', 'other style are still there'
+
+        ui.input.default_style('font-weight: 300')
+        input_a = ui.input()
+        assert input_a.style.get('font-weight') == '300'
+        assert input_a.style.get('font-size') is None, 'default style of ui.button does not affect ui.input'
+
+        class MyButton(ui.button):
+            pass
+        MyButton.default_style('font-family: courier')
+        button_d = MyButton()
+        button_e = ui.button()
+        assert button_d.style.get('font-family') == 'courier'
+        assert button_d.style.get('font-size') == '200%', 'default style is inherited'
+        assert button_e.style.get('font-family') is None, 'default style of MyButton does not affect ui.button'
+        assert button_e.style.get('font-size') == '200%'
+
+        ui.button.default_style('border: 2px').default_style('padding: 30px')
+        button_f = ui.button()
+        assert button_f.style.get('border') == '2px'
+        assert button_f.style.get('padding') == '30px'
+
+    screen.open('/')
 
 
 def test_invalid_tags(screen: Screen):
-    good_tags = ['div', 'div-1', 'DIV', 'däv', 'div_x', '🙂']
-    bad_tags = ['<div>', 'hi hi', 'hi/ho', 'foo$bar']
-    for tag in good_tags:
-        ui.element(tag)
-    for tag in bad_tags:
-        with pytest.raises(ValueError):
+    @ui.page('/')
+    def page():
+        good_tags = ['div', 'div-1', 'DIV', 'däv', 'div_x']
+        bad_tags = ['<div>', 'hi hi', 'hi/ho', 'foo$bar']
+        for tag in good_tags:
             ui.element(tag)
+        for tag in bad_tags:
+            with pytest.raises(ValueError):
+                ui.element(tag)
 
     screen.open('/')
 
 
 def test_bad_characters(screen: Screen):
-    ui.label(r'& <test> ` ${foo}')
+    @ui.page('/')
+    def page():
+        ui.label(r'& <test> ` ${foo}')
 
     screen.open('/')
     screen.should_contain(r'& <test> ` ${foo}')
@@ -341,3 +474,105 @@ def test_update_before_client_connection(screen: Screen):
 
     screen.open('/')
     screen.should_contain('Hello again!')
+
+
+@pytest.mark.skipif(platform.python_implementation() == 'PyPy', reason='PyPy has no reference counting')
+def test_no_cyclic_references_when_deleting_elements(screen: Screen):
+    elements: weakref.WeakSet = weakref.WeakSet()
+
+    @ui.page('/')
+    def page():
+        with ui.card() as card:
+            for _ in range(10):
+                elements.add(ui.element())
+                elements.add(ui.pyplot())
+                elements.add(ui.query('div'))
+        ui.button('Clear', on_click=card.clear).on_click(lambda: ui.notify('Cleared'))
+
+    screen.open('/')
+    screen.click('Clear')
+    screen.should_contain('Cleared')
+    assert len(elements) == 0, 'all elements should be deleted immediately'
+
+
+@pytest.mark.skipif(platform.python_implementation() == 'PyPy', reason='PyPy has no reference counting')
+def test_no_cyclic_references_when_deleting_clients(screen: Screen):
+    labels = weakref.WeakSet()
+
+    @ui.page('/', reconnect_timeout=1.0)
+    def main():
+        labels.add(ui.label())
+
+    screen.open('/')
+    assert len(labels) == 1
+
+    screen.close()
+    screen.wait(1.5)
+    assert len(labels) == 0
+
+
+def test_even_special_elements_have_an_html_id(screen: Screen):
+
+    @ui.page('/')
+    def page():
+        elements = [
+            ui.input(),
+            ui.textarea(),
+            ui.number(),
+            ui.date_input(),
+            ui.time_input(),
+            ui.color_input(),
+            ui.select([]),
+            ui.select([], with_input=True),  # #6114: with_input select dropped its html_id
+            ui.input_chips(),
+            ui.toggle([]),
+            ui.radio([]),
+            ui.upload(),
+            ui.codemirror(),
+        ]
+        with ui.tabs() as tabs:
+            elements += [ui.tab('One')]
+        with ui.tab_panels(tabs, value='One'):
+            elements += [ui.tab_panel('One')]
+
+        @ui.button('Check IDs').on_click
+        async def check_ids():
+            for element in elements:
+                assert await ui.run_javascript(f'document.getElementById("{element.html_id}") !== null')
+            ui.notify('All IDs found')
+
+    screen.open('/')
+    screen.click('Check IDs')
+    screen.should_contain('All IDs found')
+
+
+async def test_element_unregistered_when_constructor_raises(user: User):
+    class FailingComponent(ui.element):
+
+        def __init__(self, text: str) -> None:
+            super().__init__()
+            with self:
+                ui.label(text)
+            raise RuntimeError
+
+    class RecoveringComponent(FailingComponent):
+
+        def __init__(self, text: str) -> None:
+            with contextlib.suppress(RuntimeError):
+                super().__init__(text)
+
+    @ui.page('/')
+    def page():
+        with pytest.raises(ValueError):
+            ui.html('<script>alert("xss")</script>')
+        with pytest.raises(FileNotFoundError):
+            ui.image(Path('does_not_exist.png'))
+        with pytest.raises(RuntimeError):
+            FailingComponent('failed')
+        RecoveringComponent('recovered')
+
+    await user.open('/')
+    await user.should_not_see(kind=ui.html)
+    await user.should_not_see(kind=ui.image)
+    await user.should_not_see('failed')
+    await user.should_see('recovered')

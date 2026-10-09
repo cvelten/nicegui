@@ -1,54 +1,48 @@
-from typing import Set
-
+import httpx
 import pytest
-import requests
 
 from nicegui import __version__, ui
 from nicegui.testing import Screen
 
 
-@pytest.fixture(autouse=True)
-def activate_fastapi_docs(screen: Screen):
+@pytest.mark.parametrize('endpoint_documentation', ['none', 'page', 'internal', 'all'])
+def test_endpoint_documentation(screen: Screen, endpoint_documentation: str):
     screen.ui_run_kwargs['fastapi_docs'] = True
+    screen.ui_run_kwargs['endpoint_documentation'] = endpoint_documentation
+    uploads: list[ui.upload] = []
 
-
-def get_openapi_paths() -> Set[str]:
-    return set(requests.get(f'http://localhost:{Screen.PORT}/openapi.json', timeout=5).json()['paths'])
-
-
-def test_endpoint_documentation_default(screen: Screen):
-    screen.open('/')
-    assert get_openapi_paths() == set()
-
-
-def test_endpoint_documentation_page_only(screen: Screen):
-    screen.ui_run_kwargs['endpoint_documentation'] = 'page'
-    screen.open('/')
-    assert get_openapi_paths() == {'/'}
-
-
-def test_endpoint_documentation_internal_only(screen: Screen):
-    screen.ui_run_kwargs['endpoint_documentation'] = 'internal'
-    ui.markdown('Hey!')
+    @ui.page('/')
+    def page():
+        ui.markdown('Hey!')
+        uploads.append(ui.upload())
 
     screen.open('/')
-    assert get_openapi_paths() == {
-        f'/_nicegui/{__version__}/codehilite.css',
-        f'/_nicegui/{__version__}/libraries/{{key}}',
-        f'/_nicegui/{__version__}/components/{{key}}',
-        f'/_nicegui/{__version__}/resources/{{key}}/{{path}}',
-    }
+    upload = uploads[0]
 
+    if endpoint_documentation == 'none':
+        expected_paths = set()
+    elif endpoint_documentation == 'page':
+        expected_paths = {'/'}
+    elif endpoint_documentation == 'internal':
+        expected_paths = {
+            f'/_nicegui/{__version__}/libraries/{{key}}',
+            f'/_nicegui/{__version__}/components/{{key}}',
+            f'/_nicegui/{__version__}/resources/{{key}}/{{path}}',
+            f'/_nicegui/{__version__}/dynamic_resources/{{name}}',
+            f'/_nicegui/{__version__}/esm/{{key}}/{{path}}',
+            f'/_nicegui/client/{upload.client.id}/upload/{upload.id}',
+        }
+    elif endpoint_documentation == 'all':
+        expected_paths = {
+            '/',
+            f'/_nicegui/{__version__}/libraries/{{key}}',
+            f'/_nicegui/{__version__}/components/{{key}}',
+            f'/_nicegui/{__version__}/resources/{{key}}/{{path}}',
+            f'/_nicegui/{__version__}/dynamic_resources/{{name}}',
+            f'/_nicegui/{__version__}/esm/{{key}}/{{path}}',
+            f'/_nicegui/client/{upload.client.id}/upload/{upload.id}',
+        }
+    else:
+        raise ValueError(f'Unknown endpoint documentation setting: {endpoint_documentation}')
 
-def test_endpoint_documentation_all(screen: Screen):
-    screen.ui_run_kwargs['endpoint_documentation'] = 'all'
-    ui.markdown('Hey!')
-
-    screen.open('/')
-    assert get_openapi_paths() == {
-        '/',
-        f'/_nicegui/{__version__}/codehilite.css',
-        f'/_nicegui/{__version__}/libraries/{{key}}',
-        f'/_nicegui/{__version__}/components/{{key}}',
-        f'/_nicegui/{__version__}/resources/{{key}}/{{path}}',
-    }
+    assert set(httpx.get(f'http://localhost:{Screen.PORT}/openapi.json', timeout=5).json()['paths']) == expected_paths

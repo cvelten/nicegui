@@ -1,16 +1,18 @@
 import asyncio
-from typing import Literal, Optional
+from typing import Literal
 
 import pytest
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 
 from nicegui import ui
-from nicegui.testing import Screen
+from nicegui.testing import Screen, User
 
 
 def test_input(screen: Screen):
-    ui.input('Your name', value='John Doe')
+    @ui.page('/')
+    def page():
+        ui.input('Your name', value='John Doe')
 
     screen.open('/')
     screen.should_contain('Your name')
@@ -23,7 +25,9 @@ def test_input(screen: Screen):
 
 
 def test_password(screen: Screen):
-    ui.input('Your password', value='123456', password=True)
+    @ui.page('/')
+    def page():
+        ui.input('Your password', value='123456', password=True)
 
     screen.open('/')
     screen.should_contain('Your password')
@@ -38,7 +42,9 @@ def test_password(screen: Screen):
 
 
 def test_toggle_button(screen: Screen):
-    ui.input('Your password', value='123456', password=True, password_toggle_button=True)
+    @ui.page('/')
+    def page():
+        ui.input('Your password', value='123456', password=True, password_toggle_button=True)
 
     screen.open('/')
     screen.should_contain('Your password')
@@ -59,15 +65,22 @@ def test_toggle_button(screen: Screen):
 
 @pytest.mark.parametrize('method', ['dict', 'sync', 'async'])
 def test_input_validation(method: Literal['dict', 'sync', 'async'], screen: Screen):
-    if method == 'sync':
-        input_ = ui.input('Name', validation=lambda x: 'Short' if len(x) < 3 else 'Still short' if len(x) < 5 else None)
-    elif method == 'dict':
-        input_ = ui.input('Name', validation={'Short': lambda x: len(x) >= 3, 'Still short': lambda x: len(x) >= 5})
-    else:
-        async def validate(x: str) -> Optional[str]:
-            await asyncio.sleep(0.1)
-            return 'Short' if len(x) < 3 else 'Still short' if len(x) < 5 else None
-        input_ = ui.input('Name', validation=validate)
+    input_ = None
+
+    @ui.page('/')
+    def page():
+        nonlocal input_
+        if method == 'sync':
+            input_ = ui.input('Name',
+                              validation=lambda x: 'Short' if len(x) < 3 else 'Still short' if len(x) < 5 else None)
+        elif method == 'dict':
+            input_ = ui.input('Name',
+                              validation={'Short': lambda x: len(x) >= 3, 'Still short': lambda x: len(x) >= 5})
+        else:
+            async def validate(x: str) -> str | None:
+                await asyncio.sleep(0.1)
+                return 'Short' if len(x) < 3 else 'Still short' if len(x) < 5 else None
+            input_ = ui.input('Name', validation=validate)
 
     def assert_validation(expected: bool):
         if method == 'async':
@@ -99,9 +112,48 @@ def test_input_validation(method: Literal['dict', 'sync', 'async'], screen: Scre
     assert_validation(True)
 
 
+def test_validation_with_lagging_value_change_events(screen: Screen):
+    @ui.page('/')
+    def page():
+        name = ui.input('Name', validation=lambda v: f'Still {10 - len(v)} characters missing' if len(v) < 10 else None)
+        for listener in name._event_listeners.values():  # pylint: disable=protected-access
+            if listener.type == 'update:value':
+                listener.throttle = 1.0  # let change events lag behind the typing like on a slow connection (#5185)
+
+    screen.open('/')
+    element = screen.selenium.find_element(By.XPATH, '//*[@aria-label="Name"]')
+    element.send_keys('123')  # the throttled listener sends "1" immediately
+    screen.wait(0.5)  # let the validation error for "1" reach the client
+    element.send_keys('45678')  # keep typing after the error message arrived
+    screen.should_contain('Still 2 characters missing')
+    assert element.get_attribute('value') == '12345678'
+
+
+async def test_ui_on_exception_from_async_validation(user: User, caplog: pytest.LogCaptureFixture):
+    seen: list[Exception] = []
+
+    async def check(_value):
+        raise RuntimeError('boom')
+
+    @ui.page('/')
+    def page():
+        ui.on_exception(seen.append)
+        field = ui.input('field', validation=check)
+        ui.button('validate', on_click=lambda: field.validate(return_result=False))
+
+    await user.open('/')
+    user.find('validate').click()
+    await asyncio.sleep(0.1)
+    assert len(seen) == 1 and 'boom' in str(seen[0])
+    assert len(caplog.records) == 1 and 'boom' in caplog.records[0].message
+    caplog.records.pop(0)
+
+
 def test_input_with_multi_word_error_message(screen: Screen):
-    input_ = ui.input(label='some input')
-    ui.button('set error', on_click=lambda: input_.props('error error-message="Some multi word error message"'))
+    @ui.page('/')
+    def page():
+        input_ = ui.input(label='some input')
+        ui.button('set error', on_click=lambda: input_.props('error error-message="Some multi word error message"'))
 
     screen.open('/')
     screen.should_not_contain('Some multi word error message')
@@ -110,8 +162,33 @@ def test_input_with_multi_word_error_message(screen: Screen):
     screen.should_contain('Some multi word error message')
 
 
+def test_setting_error_without_validation(screen: Screen):
+    @ui.page('/')
+    def page():
+        ui.input('Name').error = 'Something is wrong'
+
+    screen.open('/')
+    screen.should_contain('Something is wrong')
+
+
+def test_validate_after_removing_error_prop(screen: Screen):
+    @ui.page('/')
+    def page():
+        input_ = ui.input('Name', value='valid', validation=lambda v: None if v else 'required')
+        ui.button('Reset', on_click=lambda: (input_.props(remove='error error-message').validate(), ui.label('done')))
+
+    screen.open('/')
+    screen.click('Reset')
+    screen.should_contain('done')
+
+
 def test_autocompletion(screen: Screen):
-    input_ = ui.input('Input', autocomplete=['foo', 'bar', 'baz'])
+    input_ = None
+
+    @ui.page('/')
+    def page():
+        nonlocal input_
+        input_ = ui.input('Input', autocomplete=['foo', 'bar', 'baz'])
 
     screen.open('/')
     element = screen.selenium.find_element(By.XPATH, '//*[@aria-label="Input"]')
@@ -145,10 +222,16 @@ def test_autocompletion(screen: Screen):
     element.send_keys('o')
     screen.should_contain('nce')
 
+    input_.set_autocomplete(None)  # removing the list used to raise a TypeError in the shadowText computed (#6161)
+    screen.wait(0.2)
+    screen.should_not_contain('nce')
+
 
 def test_clearable_input(screen: Screen):
-    input_ = ui.input(value='foo').props('clearable')
-    ui.label().bind_text_from(input_, 'value', lambda value: f'value: {value}')
+    @ui.page('/')
+    def page():
+        input_ = ui.input(value='foo').props('clearable')
+        ui.label().bind_text_from(input_, 'value', lambda value: f'value: {value}')
 
     screen.open('/')
     screen.should_contain('value: foo')
@@ -157,7 +240,12 @@ def test_clearable_input(screen: Screen):
 
 
 def test_update_input(screen: Screen):
-    input_ = ui.input('Name', value='Pete')
+    input_ = None
+
+    @ui.page('/')
+    def page():
+        nonlocal input_
+        input_ = ui.input('Name', value='Pete')
 
     screen.open('/')
     element = screen.selenium.find_element(By.XPATH, '//*[@aria-label="Name"]')
@@ -172,11 +260,28 @@ def test_update_input(screen: Screen):
     assert element.get_attribute('value') == 'Pete'
 
 
+def test_setting_value_via_props_overrides_user_input(screen: Screen):
+    @ui.page('/')
+    def page():
+        input_ = ui.input('Name')
+        ui.button('Force', on_click=lambda: input_.props('value=RAW'))
+
+    screen.open('/')
+    element = screen.selenium.find_element(By.XPATH, '//*[@aria-label="Name"]')
+    element.send_keys('typed')
+
+    screen.click('Force')
+    screen.wait(0.5)
+    assert element.get_attribute('value') == 'RAW'
+
+
 def test_switching_focus(screen: Screen):
-    input1 = ui.input()
-    input2 = ui.input()
-    ui.button('focus 1', on_click=lambda: input1.run_method('focus'))
-    ui.button('focus 2', on_click=lambda: input2.run_method('focus'))
+    @ui.page('/')
+    def page():
+        input1 = ui.input()
+        input2 = ui.input()
+        ui.button('focus 1', on_click=lambda: input1.run_method('focus'))
+        ui.button('focus 2', on_click=lambda: input2.run_method('focus'))
 
     screen.open('/')
     elements = screen.selenium.find_elements(By.XPATH, '//input')
@@ -187,3 +292,23 @@ def test_switching_focus(screen: Screen):
     screen.click('focus 2')
     screen.wait(0.3)
     assert elements[1] == screen.selenium.switch_to.active_element
+
+
+def test_prefix_and_suffix(screen: Screen):
+    @ui.page('/')
+    def page():
+        n = ui.input(prefix='MyPrefix', suffix='MySuffix')
+
+        def change_prefix_suffix():
+            n.prefix = 'NewPrefix'
+            n.suffix = 'NewSuffix'
+
+        ui.button('Change', on_click=change_prefix_suffix)
+
+    screen.open('/')
+    screen.should_contain('MyPrefix')
+    screen.should_contain('MySuffix')
+
+    screen.click('Change')
+    screen.should_contain('NewPrefix')
+    screen.should_contain('NewSuffix')

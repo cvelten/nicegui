@@ -1,4 +1,6 @@
-from typing import Any, List, Literal, Tuple, Union
+from typing import Any, Literal
+
+from typing_extensions import Self
 
 from .pyplot import Pyplot
 
@@ -25,14 +27,14 @@ class LinePlot(Pyplot):
         """
         super().__init__(close=close, **kwargs)
 
-        self.x: List[float] = []
-        self.Y: List[List[float]] = [[] for _ in range(n)]
+        self.x: list[float] = []
+        self.Y: list[list[float]] = [[] for _ in range(n)]
         self.lines = [self.fig.gca().plot([], [])[0] for _ in range(n)]
         self.slice = slice(0 if limit is None else -limit, None)
         self.update_every = update_every
         self.push_counter = 0
 
-    def with_legend(self, titles: List[str], **kwargs: Any):
+    def with_legend(self, titles: list[str], **kwargs: Any):
         """Add a legend to the plot.
 
         :param titles: list of titles for the lines
@@ -43,11 +45,11 @@ class LinePlot(Pyplot):
         return self
 
     def push(self,
-             x: List[float],
-             Y: List[List[float]],
+             x: list[float],
+             Y: list[list[float]],
              *,
-             x_limits: Union[None, Literal['auto'], Tuple[float, float]] = 'auto',
-             y_limits: Union[None, Literal['auto'], Tuple[float, float]] = 'auto',
+             x_limits: None | Literal['auto'] | tuple[float, float] = 'auto',
+             y_limits: None | Literal['auto'] | tuple[float, float] = 'auto',
              ) -> None:
         """Push new data to the plot.
 
@@ -71,7 +73,7 @@ class LinePlot(Pyplot):
 
         if isinstance(x_limits, tuple):
             self.fig.gca().set_xlim(*x_limits)
-        elif x_limits == 'auto':
+        elif x_limits == 'auto' and self.x:
             min_x = min(self.x)
             max_x = max(self.x)
             if min_x != max_x:
@@ -82,16 +84,16 @@ class LinePlot(Pyplot):
             self.fig.gca().set_ylim(*y_limits)
         elif y_limits == 'auto':
             flat_y = [y_i for y in self.Y for y_i in y]
-            min_y = min(flat_y)
-            max_y = max(flat_y)
-            if min_y != max_y:
-                pad_y = 0.01 * (max_y - min_y)
-                self.fig.gca().set_ylim(min_y - pad_y, max_y + pad_y)
+            if flat_y:
+                min_y = min(flat_y)
+                max_y = max(flat_y)
+                if min_y != max_y:
+                    pad_y = 0.01 * (max_y - min_y)
+                    self.fig.gca().set_ylim(min_y - pad_y, max_y + pad_y)
 
         self._convert_to_html()
-        self.update()
 
-    def clear(self) -> None:
+    def clear(self) -> Self:
         """Clear the line plot."""
         super().clear()
         self.x.clear()
@@ -100,4 +102,4 @@ class LinePlot(Pyplot):
         for line in self.lines:
             line.set_data([], [])
         self._convert_to_html()
-        self.update()
+        return self
